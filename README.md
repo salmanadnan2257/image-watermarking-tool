@@ -129,6 +129,15 @@ In the window that opens:
 
 ## Challenges
 
+- **A TikZ node style name collided with a pgfplots reserved key while
+  building the explainer PDFs.** The deep-dive diagram for the preview-vs-save
+  data flow (`docs/explainers/deep-dive.pdf`) defined a TikZ node style named
+  `step` for the flow-diagram boxes. Because the document also loads
+  `pgfplots` (for axis-capable diagrams elsewhere), `pgfplots` had already
+  registered `/tikz/step` as a key that requires a value (used for grid
+  spacing), so every `\node[step]` call failed to compile with `Package
+  pgfkeys Error: The key '/tikz/step' requires a value`. Fixed by renaming the
+  style to `flowstep`, which does not collide with any pgfplots key.
 - **RGBA output still forces PNG regardless of the user's format choice.**
   `save_watermarked_file()` saves as PNG whenever the composited result is in
   RGBA mode, ignoring the format dropdown. Picking JPEG as the output format
