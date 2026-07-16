@@ -1,0 +1,877 @@
+% explainer-source-hash: 362759360feb963e7ecd73ec8e3e11b8bdae1c85cf84d903c13ecfda90a12cb9
+% explainer-source-commit: 7cf58c082e5d8a2c1315b8c9bd8f2aa98954b213
+% explainer-generated: 2026-07-16
+% Regenerate with /explain-all (see WIRING.md). Do not edit this stamp by hand:
+% it is how the toolchain knows whether this document still matches the code.
+\documentclass[11pt,a4paper]{article}
+\input{preamble}
+
+\title{\textbf{Image Watermarking Tool}\\[4pt]
+\large A Deep Dive: every module, every decision, from zero prior knowledge}
+\author{Portfolio explainer}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{keyidea}{The whole project in five sentences}
+This is a desktop application with a window, buttons and sliders. You give it one
+small image (a logo, called the \emph{watermark}) and a pile of photos. You drag
+sliders to choose how big the logo should be, how see-through it should be, and
+where on the photo it should sit. The window shows you the result live, side by
+side with the untouched original, before anything is written to disk. When you are
+happy, one button stamps that same logo onto every photo you selected and saves
+copies, leaving your originals alone.
+\end{keyidea}
+
+\tableofcontents
+\newpage
+
+\section{Orientation: what you are looking at}
+
+\subsection{The size of the thing}
+
+The entire program is one file, \file{main.py}, at 389 lines. It has one external
+dependency (Pillow) and one dependency that ships with Python itself (tkinter).
+There are no tests, no configuration files, no environment variables, no database,
+no network access. It reads image files and writes image files.
+
+This document is proportional to that. It covers the project completely and then
+stops. If it seems short next to a document about a distributed database, that is
+correct: padding a small tool into a large document would make it a worse document.
+
+\begin{jargon}{Desktop GUI application}
+GUI stands for Graphical User Interface: a program you interact with by looking at
+a window and clicking things, as opposed to a command-line program where you type
+text. ``Desktop'' means it runs on your own computer as its own window, rather than
+in a web browser or on a server somewhere.
+\end{jargon}
+
+\subsection{The directory}
+
+\begin{figure}[H]
+\centering
+\begin{forest} dirtree
+[image-watermarking-tool
+  [main.py {\rmfamily\itshape\, the entire program, 389 lines}]
+  [requirements.txt {\rmfamily\itshape\, one line: Pillow}]
+  [README.md]
+  [LICENSE]
+  [.gitignore]
+  [docs
+    [screenshots
+      [app.png {\rmfamily\itshape\, a picture of the running window}]
+    ]
+    [explainers
+      [deep-dive.tex {\rmfamily\itshape\, this document}]
+      [brief.tex]
+    ]
+  ]
+]
+\end{forest}
+\caption{Every tracked file in the repository. There is no \file{src/} folder, no
+package, no module hierarchy, because at 389 lines there is nothing to organise.}
+\end{figure}
+
+\subsection{The two dependencies, and what each is for}
+
+\begin{jargon}{tkinter}
+The graphical toolkit that comes bundled with Python. It provides the window, the
+buttons, the sliders and the drawing surfaces. It is a Python wrapper around an
+older toolkit called Tk. You do not install it with \code{pip}; it arrives with
+Python (though on stripped-down Linux systems it can be a separate operating-system
+package, which is why the README mentions \code{apt install python3-tk}).
+\end{jargon}
+
+\begin{jargon}{Pillow (imported as \code{PIL})}
+The image library. It is the thing that actually knows how to read a JPEG off the
+disk, shrink it, change how transparent it is, paste one image onto another, and
+write the result back out. Every pixel operation in this project is Pillow doing
+the work. \file{requirements.txt} pins it to \code{Pillow>=10.0,<13.0}, meaning
+version 10 or newer but not version 13, which is a defensive range: it accepts bug
+fixes but refuses a future major version that might change behaviour.
+\end{jargon}
+
+The division of labour is clean and worth stating up front, because it is the
+project's main organising idea:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{tkinter} & knows about windows, clicks and slider positions. Knows nothing about pixels. \\
+\textbf{Pillow} & knows about pixels. Knows nothing about windows. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The two meet at exactly one point: \code{ImageTk.PhotoImage}, a bridge class that
+converts a Pillow image into something tkinter is willing to draw on a canvas.
+
+\section{Architecture}
+
+\subsection{The shape of the program}
+
+\file{main.py} has two distinct halves, and understanding the split is most of
+understanding the project.
+
+The first half is four \textbf{pure functions}. They take images and numbers in,
+return images and numbers out, and touch no window, no slider and no disk. The
+second half is one \textbf{class}, \code{WatermarkApp}, which builds the window,
+holds the state, listens for clicks, and calls the four pure functions when it needs
+pixels moved.
+
+\begin{jargon}{Pure function}
+A function whose output depends only on the values you pass in, and which changes
+nothing outside itself. Given the same inputs it always returns the same thing.
+This matters here for one very practical reason: a pure function can be called from
+two completely different places (the live preview and the final save) and be trusted
+to behave identically in both. That property is the project's central design claim.
+\end{jargon}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}
+
+\node[box, minimum width=34mm] (root)     at (0,7)      {\code{main()}\\creates \code{tk.Tk()} root};
+\node[box, minimum width=34mm] (app)      at (0,5.4)    {\code{WatermarkApp}\\holds all state};
+
+\node[box, minimum width=32mm] (controls) at (-4.6,3.3) {Controls panel\\buttons, sliders,\\radio grid, dropdown};
+\node[box, minimum width=32mm] (preview)  at (4.6,3.3)  {Preview panel\\two \code{tk.Canvas}\\``Before'' / ``After''};
+
+\node[box, fill=white, draw=accent, minimum width=76mm] (pure) at (0,0.9)
+  {\textbf{The four pure functions}\\
+   \code{compute\_watermark\_box} \quad \code{apply\_opacity}\\
+   \code{compute\_position} \quad\quad \code{paste\_watermark\_at}};
+
+\node[extbox, minimum width=24mm] (pillow) at (-7.4,0.9) {Pillow\\(pixels)};
+\node[extbox, minimum width=24mm] (dialog) at (-8.9,3.3) {Native file\\dialogs};
+\node[store,  minimum width=28mm] (disk)   at (0,-1.9)   {Disk\\\code{watermarked/}};
+
+\draw[flow] (root) -- (app);
+\draw[flow] (app) -- (controls);
+\draw[flow] (app) -- (preview);
+\draw[flow] (dialog) -- (controls) node[lbl, midway, above] {chosen\\paths};
+\draw[flow] (controls) -- node[lbl, midway, left] {slider\\change} (pure);
+\draw[flow] (pure) -- node[lbl, midway, right] {composited\\image} (preview);
+\draw[dflow] (pure) -- (pillow);
+\draw[flow] (pure) -- node[lbl, midway, right] {\code{save\_watermarked\_file}} (disk);
+
+\end{tikzpicture}}
+\caption{The architecture. Everything above the blue box is user interface; the blue
+box is where images are actually manipulated. Solid arrows are control and data flow;
+the dashed arrow marks the pure functions delegating the real pixel work to Pillow.}
+\end{figure}
+
+\section{The four pure functions}
+
+These are the load-bearing part of the program. Each is short and each does exactly
+one thing.
+
+\subsection{\code{compute\_watermark\_box(watermark, max\_width, max\_height)}}
+
+\begin{lstlisting}[language=Python]
+def compute_watermark_box(watermark, max_width, max_height):
+    resized = watermark.copy()
+    resized.thumbnail((max_width, max_height), Image.LANCZOS)
+    return resized
+\end{lstlisting}
+
+Three lines, and two of them are doing something subtle.
+
+\code{watermark.copy()} exists because Pillow's \code{thumbnail()} modifies the
+image \emph{in place} rather than returning a new one. Without the copy, every
+preview render would permanently shrink the user's loaded watermark, and dragging a
+slider back up would not restore it: the pixels would be gone. The copy is what
+makes the sliders non-destructive.
+
+\begin{jargon}{Bounding box vs exact size}
+\code{thumbnail((w, h))} does not resize the image to exactly \code{w} by \code{h}.
+It shrinks the image until it \emph{fits inside} a \code{w} by \code{h} rectangle
+while keeping its shape (its aspect ratio) unchanged. A 200x100 logo asked to fit a
+600x600 box would come out 200x100; asked to fit a 60x60 box it comes out 60x30.
+This is why the sliders are labelled ``Max width'' and ``Max height'' rather than
+``Width'' and ``Height''.
+\end{jargon}
+
+\begin{jargon}{Aspect ratio}
+The ratio of an image's width to its height. Preserving it means the image is never
+stretched or squashed, only made uniformly bigger or smaller. A logo that ignored
+aspect ratio would come out visibly distorted.
+\end{jargon}
+
+\begin{jargon}{LANCZOS}
+The named algorithm Pillow uses to decide what colour each pixel of the shrunken
+image should be. When you shrink an image, several original pixels have to collapse
+into one, and the choice of how to average them affects quality. LANCZOS is the
+slowest and highest-quality of Pillow's options, which is a defensible choice here
+because the images are small and the operation is infrequent.
+\end{jargon}
+
+\begin{honest}{\code{thumbnail} never enlarges, and that has consequences}
+This is the single most important behavioural fact in the project, and it is not
+stated in the README. \code{thumbnail()} only ever shrinks. If the watermark is
+200x100 and the user drags ``Max width'' to 600, nothing happens: the watermark
+stays 200x100. The slider is a shrink-only control that silently does nothing across
+the whole upper part of its range for any watermark smaller than the slider value.
+Since the sliders default to 150 and run to 600, and logos are often small, users
+will meet this. Verified by running \code{compute\_watermark\_box} on a 200x100
+image with a 600x600 box: the result was 200x100. Section~\ref{sec:wysiwyg} shows
+that this is not merely cosmetic; it is the root cause of a real correctness bug.
+\end{honest}
+
+\subsection{\code{apply\_opacity(watermark, opacity\_percent)}}
+
+\begin{lstlisting}[language=Python]
+def apply_opacity(watermark, opacity_percent):
+    wm = watermark.convert('RGBA')
+    r, g, b, a = wm.split()
+    scale = opacity_percent / 100.0
+    a = a.point(lambda v: int(v * scale))
+    wm.putalpha(a)
+    return wm
+\end{lstlisting}
+
+\begin{jargon}{RGBA and the alpha channel}
+A colour image stores, for every pixel, how much Red, Green and Blue it has: RGB.
+An RGBA image stores a fourth number per pixel, Alpha, which records how opaque
+that pixel is. Alpha runs 0 to 255, where 255 means fully solid and 0 means fully
+invisible. A JPEG has no alpha channel at all; a PNG can have one. Alpha is what
+makes a watermark look faded rather than pasted like a sticker.
+\end{jargon}
+
+The function does four things. \code{convert('RGBA')} guarantees there is an alpha
+channel to work with, inventing a fully opaque one (all 255) if the source was a
+JPEG. \code{split()} separates the image into its four channels as four separate
+greyscale images. \code{a.point(...)} runs a function over every pixel of the alpha
+channel, multiplying it by the requested fraction. \code{putalpha(a)} puts the
+scaled channel back.
+
+\begin{jargon}{\code{.point()}}
+Pillow's way of saying ``apply this small function to every single pixel value''.
+It is implemented in C internally, so it is far faster than a Python loop over
+pixels would be, while reading almost like one.
+\end{jargon}
+
+Note that opacity is applied \emph{multiplicatively}, not by assignment. A watermark
+PNG that was already 50\% transparent in places, set to 50\% opacity here, ends up
+at 25\% in those places. This is the correct behaviour (it respects the artwork's
+own transparency) but it means the slider is a relative dimmer, not an absolute
+setting. Verified: \code{apply\_opacity} on a fully opaque red pixel at 50 returns
+alpha 127, and at 0 returns alpha 0.
+
+\begin{honest}{\code{apply\_opacity} always returns RGBA, and this is a bigger deal than it looks}
+Because the first line is an unconditional \code{convert('RGBA')}, this function can
+never return anything but an RGBA image, whatever you feed it. Since both the
+preview path and the save path always run the watermark through it, the watermark is
+\emph{always} RGBA downstream. Section~\ref{sec:deadjpeg} shows that this single
+fact silently kills the JPEG option in the output dropdown.
+\end{honest}
+
+\subsection{\code{compute\_position(...)}}
+
+\begin{lstlisting}[language=Python]
+def compute_position(base_w, base_h, wm_w, wm_h, preset, offset_x_pct, offset_y_pct):
+    base_x, base_y = POSITION_PRESETS[preset](base_w, base_h, wm_w, wm_h)
+    x = base_x + int((offset_x_pct / 100.0) * base_w)
+    y = base_y + int((offset_y_pct / 100.0) * base_h)
+    return x, y
+\end{lstlisting}
+
+Position is computed in two stages: snap to one of nine presets, then nudge by a
+percentage of the photo's own dimensions.
+
+The nine presets live in \code{POSITION\_PRESETS}, a dictionary mapping a name to a
+small anonymous function:
+
+\begin{lstlisting}[language=Python]
+POSITION_PRESETS = {
+    'top-left':      lambda bw, bh, ww, wh: (0, 0),
+    'center':        lambda bw, bh, ww, wh: ((bw - ww) // 2, (bh - wh) // 2),
+    'bottom-right':  lambda bw, bh, ww, wh: (bw - ww, bh - wh),
+    # ... nine in total
+}
+\end{lstlisting}
+
+\begin{jargon}{\code{lambda}, and a dictionary of functions}
+A \code{lambda} is a function written inline without a name. Storing them in a
+dictionary means ``look up the preset by name and run whatever formula belongs to
+it'', which replaces what would otherwise be a nine-branch \code{if/elif} chain.
+Adding a tenth position would be one new line rather than a new branch. This is a
+recognised pattern sometimes called a dispatch table.
+\end{jargon}
+
+\begin{jargon}{Image coordinates}
+Pixel coordinates start at \code{(0, 0)} in the \emph{top-left} corner, with \code{x}
+growing rightwards and \code{y} growing \emph{downwards}. This is upside-down
+compared to the graphs taught in school, and it is why \code{'top-left'} is
+\code{(0, 0)} and \code{'bottom-right'} is \code{(bw - ww, bh - wh)}: to place the
+watermark's own top-left corner such that its bottom-right corner lands on the
+photo's bottom-right corner, you subtract the watermark's size.
+\end{jargon}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=1]
+\draw[draw=inkblue, fill=softgrey, rounded corners=2pt] (0,0) rectangle (7,4.6);
+\foreach \x/\y/\lab/\name in {
+  0.55/4.05/TL/top-left, 3.5/4.05/TC/top-center, 6.45/4.05/TR/top-right,
+  0.55/2.3/ML/middle-left, 3.5/2.3/C/center, 6.45/2.3/MR/middle-right,
+  0.55/0.55/BL/bottom-left, 3.5/0.55/BC/bottom-center, 6.45/0.55/BR/bottom-right}
+  {\node[circle, draw=accent, fill=white, text=inkblue, inner sep=2.2pt,
+        font=\scriptsize\bfseries] at (\x,\y) {\lab};}
+\node[font=\scriptsize\itshape, text=black!60] at (3.5,-0.45) {the photo};
+\draw[flow] (-0.5,5.05) -- (0.75,5.05) node[lbl, above] {x grows};
+\draw[flow] (-0.5,5.05) -- (-0.5,3.9) node[lbl, left, midway] {y grows};
+\node[font=\scriptsize, text=black!70, align=left] at (10.2,2.3)
+  {Each dot is where the\\watermark's \emph{own} top-left\\corner is placed.\\[4pt]
+   The fine X/Y sliders then\\add up to $\pm$20\% of the\\photo's width/height\\on top of the preset.};
+\end{tikzpicture}
+\caption{The 3x3 preset grid, exposed in the window as nine radio buttons labelled
+TL, TC, TR, ML, C, MR, BL, BC, BR (from \code{POSITION\_LABELS}).}
+\end{figure}
+
+The offsets are expressed as a percentage \emph{of the photo}, not of the watermark
+and not in pixels. This is the right choice: it means the same settings produce a
+visually equivalent placement on a 600x400 photo and on a 6000x4000 photo, which is
+exactly what batch mode needs.
+
+\begin{honest}{Nothing clamps the position to the canvas}
+\code{compute\_position} can return coordinates entirely outside the photo, and
+nothing checks. Verified: a 3000x2000 photo with a 200x100 watermark at
+\code{bottom-right} with both offsets at $+$20 returns \code{(3400, 2300)}, which is
+well past the bottom-right corner. Pillow does not error on an off-canvas paste; it
+simply clips, so the watermark vanishes entirely. The save then still reports
+``Saved 1 watermarked photo(s).'' The user gets a silent no-op presented as success.
+The preview would show the same emptiness, which is the one saving grace, so a
+watching user would notice. Clamping \code{x} to \code{[0, base\_w - wm\_w]} would
+be a two-line fix.
+\end{honest}
+
+\subsection{\code{paste\_watermark\_at(base\_image, watermark, x, y)}}
+\label{sec:paste}
+
+This function is the heart of the project and the subject of its main war story.
+
+\begin{lstlisting}[language=Python]
+def paste_watermark_at(base_image, watermark, x, y):
+    result = base_image.convert('RGBA') if watermark.mode == 'RGBA' else base_image.copy()
+    if watermark.mode == 'RGBA':
+        result.paste(watermark, (x, y), watermark)
+    else:
+        result.paste(watermark, (x, y))
+    return result
+\end{lstlisting}
+
+\begin{jargon}{Alpha compositing}
+The act of laying a partly transparent image over another and computing, for each
+pixel, the correct blended colour: mostly the top image where it is opaque, mostly
+the bottom image where it is transparent, and a weighted mix in between. It is what
+``fading a logo onto a photo'' means mathematically.
+\end{jargon}
+
+\begin{keyidea}{The bug this function exists to fix}
+Pillow's \code{paste(image, (x, y))} does \textbf{not} blend. With only two
+arguments it \emph{overwrites} the destination pixels outright, copying the
+watermark's RGB \emph{and} its alpha straight over whatever was underneath. The
+photo's pixels in that rectangle are simply discarded.
+
+The trap is that this still \emph{looks} plausible. The faded alpha value does get
+written into the output file, so any image viewer that respects alpha renders the
+watermark as translucent, and the result passes a glance. But it is translucent
+against nothing: the photo underneath it was thrown away, not mixed in.
+
+The fix is the third argument. \code{paste(watermark, (x, y), watermark)} passes the
+watermark as its own \emph{mask}, which tells Pillow to use the watermark's alpha
+channel as the recipe for blending rather than as data to copy.
+\end{keyidea}
+
+\subsubsection{Proving it, rather than asserting it}
+
+The README claims specific pixel values as evidence. Those numbers were
+re-derived independently for this document by running both code paths: a solid blue
+$(0,0,255)$ photo, a solid red $(255,0,0)$ watermark faded to 50\%, and the pixel
+read at the same covered location under each.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Code path} & \textbf{Pixel at the covered spot} & \textbf{Verdict} \\
+\midrule
+\code{paste(wm, (x,y))} & \code{(255, 0, 0, 127)} & flat red; blue is \emph{zero} \\
+\code{paste(wm, (x,y), wm)} & \code{(127, 0, 128, 191)} & genuine red/blue mix \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both reproduced exactly. The reasoning is airtight and worth being able to say out
+loud: in the broken path the blue channel is \textbf{0}, and the base image was pure
+blue. If any blending had occurred, blue could not possibly be zero. Meanwhile red
+sits at its full 255, untouched by the 50\% fade. In the fixed path blue has climbed
+to 128 and red has fallen to 127, which is the weighted average you would predict
+from a half-opaque red over a solid blue.
+
+\begin{figure}[H]
+\centering
+\resizebox{0.94\textwidth}{!}{
+\begin{tikzpicture}
+
+\node[font=\bfseries\small, text=warnred] at (2.6,3.3) {OLD: paste(wm, (x,y))};
+\draw[draw=linegrey, fill=blue!70!black] (0,0) rectangle (5.2,2.8);
+\node[font=\scriptsize, text=white] at (2.6,0.4) {base photo (0,0,255)};
+\draw[draw=linegrey, fill=red] (1.3,0.9) rectangle (3.9,2.3);
+\node[font=\scriptsize, text=white, align=center] at (2.6,1.6) {(255,\,0,\,0,\,127)\\flat overwrite};
+\node[font=\scriptsize\itshape, text=warnred, align=center] at (2.6,-0.55)
+  {blue channel = 0\\the photo underneath is gone};
+
+\node[font=\bfseries\small, text=okgreen] at (10.4,3.3) {NEW: paste(wm, (x,y), wm)};
+\draw[draw=linegrey, fill=blue!70!black] (7.8,0) rectangle (13,2.8);
+\node[font=\scriptsize, text=white] at (10.4,0.4) {base photo (0,0,255)};
+\draw[draw=linegrey, fill=purple!75!blue] (9.1,0.9) rectangle (11.7,2.3);
+\node[font=\scriptsize, text=white, align=center] at (10.4,1.6) {(127,\,0,\,128,\,191)\\true blend};
+\node[font=\scriptsize\itshape, text=okgreen, align=center] at (10.4,-0.55)
+  {blue = 128, red pulled to 127\\the photo shows through};
+
+\draw[flow] (5.5,1.4) -- (7.5,1.4) node[lbl, midway, above] {the\\fix};
+\end{tikzpicture}}
+\caption{The alpha-compositing bug, drawn. Both versions produce a file whose alpha
+channel says ``translucent''. Only the right-hand one actually mixed in the photo.}
+\end{figure}
+
+\begin{honest}{Half of this function is unreachable}
+The \code{else} branches exist for a non-RGBA watermark, but no such watermark ever
+arrives. Every caller (both the preview and the save path) runs the watermark
+through \code{apply\_opacity} first, which unconditionally converts to RGBA. So
+\code{watermark.mode} is always \code{'RGBA'}, the ternary always picks
+\code{convert('RGBA')}, and the \code{else} branch is dead code. It is harmless and
+arguably good defensive hygiene for a function that presents itself as general
+purpose, but it is dead, and an interviewer who traces the callers will find it.
+\end{honest}
+
+\section{\code{WatermarkApp}: the window and the state}
+
+\subsection{What the class holds}
+
+\code{WatermarkApp.\_\_init\_\_} sets up the window (980x620, with a 860x560
+minimum) and then declares every piece of state the program has:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Attribute} & \textbf{Type} & \textbf{Holds} \\
+\midrule
+\code{watermark\_original} & Image or \code{None} & the raw logo, never modified \\
+\code{photo\_paths} & tuple of paths & the selected batch \\
+\code{\_preview\_after\_id} & handle or \code{None} & the pending debounce timer \\
+\code{\_before\_imgtk} & \code{PhotoImage} & anti-garbage-collection anchor \\
+\code{\_after\_imgtk} & \code{PhotoImage} & anti-garbage-collection anchor \\
+\midrule
+\code{width\_var}, \code{height\_var} & \code{IntVar} (150, 150) & slider values \\
+\code{opacity\_var} & \code{IntVar} (50) & slider value \\
+\code{position\_var} & \code{StringVar} & preset, def.\ \code{bottom-right} \\
+\code{offset\_x\_var}, \code{offset\_y\_var} & \code{IntVar} (0, 0) & fine nudges \\
+\code{format\_var} & \code{StringVar} & format, def.\ \code{JPEG} \\
+\code{location\_var} & \code{StringVar} (empty) & custom save folder \\
+\midrule
+\code{watermark\_label\_var} & \code{StringVar} & on-screen text \\
+\code{photos\_label\_var} & \code{StringVar} & on-screen text \\
+\code{status\_var} & \code{StringVar} & on-screen text \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{jargon}{Tk variables (\code{IntVar}, \code{StringVar})}
+Ordinary Python variables cannot notify anyone when they change. Tk variables are
+special wrapper objects that can: you attach one to a slider and to a label, and
+when the slider moves, the variable updates and the label follows automatically.
+They are read with \code{.get()} and written with \code{.set()}, never by plain
+assignment. They are the glue that keeps the widgets and the state in sync without
+manual bookkeeping.
+\end{jargon}
+
+\begin{keyidea}{Why \code{watermark\_original} is never touched}
+The uploaded watermark is stored once and treated as read-only forever. Every
+preview and every save builds a fresh working copy from it, resizes that copy, fades
+that copy, and throws it away. This is what makes every slider non-destructive and
+freely reversible in both directions. The alternative (mutating a single working
+watermark as the sliders move) would mean opacity 50 followed by opacity 100 leaves
+you at 50\% of 50\%, permanently. The README notes this is a deliberate improvement
+over an earlier version that used module-level globals.
+\end{keyidea}
+
+\begin{jargon}{Garbage collection, and why \code{\_before\_imgtk} exists}
+Python automatically frees objects nothing refers to any more. \code{ImageTk.PhotoImage}
+has a notorious interaction with this: tkinter's canvas holds only a weak internal
+handle to the image, so if the only Python reference goes out of scope at the end of
+the function, Python frees it and the image silently disappears from the window,
+leaving a blank rectangle and no error. Storing it on \code{self} keeps a live
+reference alive for as long as the app exists. The comment in the source, ``keep
+references so Tk doesn't GC them'', is guarding against exactly this.
+\end{jargon}
+
+\subsection{Building the layout}
+
+\code{\_build\_layout} splits the window into a left controls column and a right
+preview area, with a status label pinned along the bottom. \code{\_build\_controls}
+then fills the left column with four numbered \code{LabelFrame} groups, which is a
+small but real usability decision: the interface reads as a sequence
+(1.~Load images, 2.~Size and opacity, 3.~Position, 4.~Output) rather than as an
+undifferentiated wall of sliders.
+
+\begin{jargon}{Geometry managers: \code{pack} vs \code{grid}}
+tkinter offers two ways to arrange widgets inside a container. \code{pack} stacks
+them along an edge; \code{grid} places them in rows and columns. The rule that bites
+people is that you may not use both inside the \emph{same} container: doing so hangs
+or errors. This code obeys it, using \code{pack} for the coarse column layout and
+\code{grid} inside the frames that need alignment, and giving the offset sliders
+their own sub-frame precisely so the two never mix in one parent. The README records
+that this exact clash was a real bug caught during development.
+\end{jargon}
+
+\code{\_add\_slider} is a small factory that builds a label, a \code{ttk.Scale} and a
+live numeric readout in one call, wiring the readout via \code{var.trace\_add('write', refresh)}
+so it follows the variable automatically.
+
+\begin{honest}{The status label is always red}
+\code{status} is created with \code{fg='\#b00020'}, a red normally reserved for
+errors, and that colour never changes. The success message ``Saved 5 watermarked
+photo(s).'' therefore renders in the same alarming red as ``Upload a watermark
+first.'' A one-line fix (set the colour alongside the text) would remove a real
+moment of user confusion. Minor, but it is the kind of detail worth having noticed
+before someone else points at the screenshot.
+\end{honest}
+
+\subsection{The event flow and the debounce}
+
+\begin{lstlisting}[language=Python]
+def _schedule_preview(self, *_):
+    if self._preview_after_id is not None:
+        self.root.after_cancel(self._preview_after_id)
+    self._preview_after_id = self.root.after(60, self._render_preview)
+\end{lstlisting}
+
+\begin{jargon}{The event loop, and \code{after()}}
+A GUI program spends its life in a loop (started by \code{root.mainloop()}) waiting
+for things to happen: a click, a keypress, a slider drag. \code{root.after(60, fn)}
+means ``run \code{fn} once, 60 milliseconds from now'', and hands back a handle you
+can use to cancel it. Crucially this is not a background thread; the callback runs on
+the same single thread when the loop next gets a moment, which is why nothing here
+needs locks.
+\end{jargon}
+
+\begin{jargon}{Debouncing}
+Dragging a slider fires a change event for every pixel of movement, potentially
+dozens per second. Redrawing on each one would queue up far more work than the
+program can do, and the window would lag behind the mouse. Debouncing means:
+whenever an event arrives, cancel the previously scheduled work and reschedule it a
+moment later. The result is that a burst of rapid events collapses into exactly one
+render, fired 60ms after the user's last movement. 60ms is below the threshold where
+a human perceives delay, so it feels instant while doing a fraction of the work.
+\end{jargon}
+
+\begin{figure}[H]
+\centering
+\resizebox{0.9\textwidth}{!}{
+\begin{tikzpicture}
+\draw[->, draw=black!50] (0,0) -- (13,0) node[right, font=\scriptsize] {time};
+\foreach \x in {0.6,1.1,1.5,2.0,2.4,3.0,3.5,4.1}
+  {\draw[draw=accent, thick] (\x,0.1) -- (\x,0.75);}
+\node[font=\scriptsize, text=accent, align=center] at (2.3,1.35) {slider drag:\\8 change events};
+
+\foreach \x in {0.6,1.1,1.5,2.0,2.4,3.0,3.5}
+  {\node[font=\tiny, text=black!45] at (\x,-0.42) {\texttt{x}};}
+\node[font=\scriptsize\itshape, text=black!55, align=center] at (2.0,-1.05)
+  {each one cancels\\the timer before it};
+
+\node[box, minimum width=26mm] (r) at (8.8,1.5) {\code{\_render\_preview()}\\runs \emph{once}};
+\draw[flow] (4.1,0.75) .. controls (5.6,2.4) and (6.3,1.5) .. (7.5,1.5);
+\node[font=\scriptsize\itshape, text=black!60] at (5.9,0.5) {60ms of quiet};
+\end{tikzpicture}}
+\caption{Debouncing. Seven of the eight events do no work at all: they exist only to
+cancel the timer their predecessor set. Only the final one survives its 60ms and
+renders.}
+\end{figure}
+
+\begin{honest}{The debounce is bypassed on upload}
+\code{\_\_init\_\_} calls \code{\_schedule\_preview()} directly, as do
+\code{upload\_watermark} and \code{upload\_photos}. That is correct and harmless. But
+note that \code{\_render\_preview} reopens the base photo \emph{from disk} on every
+single tick (\code{Image.open(self.photo\_paths[0])}), and no cache exists. At 60ms
+debounce and interactive speeds this is survivable, and the README honestly flags it
+under ``What I'd do differently''. On a 50-megapixel source photo, though, a slider
+drag becomes a sustained re-decode loop, and the debounce is the only thing standing
+between the user and a visibly stuttering window. Caching the opened image would
+cost about three lines.
+\end{honest}
+
+\section{The two pipelines, and the promise between them}
+\label{sec:wysiwyg}
+
+\subsection{The design claim}
+
+The project's headline claim, stated in the README, is that the preview and the save
+call the same compositing function, so ``what's shown on screen before saving is what
+actually gets written to disk, not an approximation''. This is the most interesting
+thing about the project and deserves careful checking.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=7mm]
+
+\node[font=\bfseries\small, text=inkblue] (h1) at (0,4.6) {PREVIEW path (\code{\_render\_preview})};
+\node[font=\bfseries\small, text=inkblue] (h2) at (10.6,4.6) {SAVE path (\code{apply\_and\_save})};
+
+\node[box, minimum width=40mm] (p1) at (0,3.6) {open \code{photo\_paths[0]}};
+\node[box, minimum width=40mm] (p2) at (0,2.4) {\code{thumbnail(300, 300)}\\$\Rightarrow$ \code{scale = prev.w / base.w}};
+\node[box, minimum width=40mm] (p3) at (0,1.1) {box = \code{slider * scale}};
+\node[box, minimum width=40mm] (p4) at (0,-0.1) {\code{compute\_watermark\_box}};
+
+\node[box, minimum width=40mm] (s1) at (10.6,3.6) {loop: open \emph{every} photo};
+\node[box, minimum width=40mm] (s2) at (10.6,2.4) {full resolution\\(no thumbnail)};
+\node[box, minimum width=40mm] (s3) at (10.6,1.1) {box = \code{slider}};
+\node[box, minimum width=40mm] (s4) at (10.6,-0.1) {\code{compute\_watermark\_box}};
+
+\node[box, fill=white, draw=accent, minimum width=52mm] (shared) at (5.3,-1.9)
+  {\textbf{shared, identical for both}\\
+   \code{apply\_opacity} $\rightarrow$ \code{compute\_position} $\rightarrow$ \code{paste\_watermark\_at}};
+
+\node[box, minimum width=34mm] (canvas) at (0,-3.6) {two \code{tk.Canvas}\\via \code{ImageTk.PhotoImage}};
+\node[store, minimum width=30mm] (disk) at (10.6,-3.6) {\code{watermarked/}\\on disk};
+
+\draw[flow] (p1) -- (p2); \draw[flow] (p2) -- (p3); \draw[flow] (p3) -- (p4);
+\draw[flow] (s1) -- (s2); \draw[flow] (s2) -- (s3); \draw[flow] (s3) -- (s4);
+\draw[flow] (p4) -- (shared);
+\draw[flow] (s4) -- (shared);
+\draw[flow] (shared) -- (canvas);
+\draw[flow] (shared) -- (disk);
+
+\node[font=\scriptsize\itshape, text=warnred, align=center] at (5.3,0.6)
+  {the ONLY divergence:\\the requested box is scaled\\on the left, raw on the right};
+\end{tikzpicture}}
+\caption{Preview and save. The bottom half is genuinely shared code, which is why
+the colour, the fade and the placement are trustworthy. The top half differs, and
+that is where the guarantee leaks.}
+\end{figure}
+
+The claim is largely true, and the design is sound. \code{apply\_opacity},
+\code{compute\_position} and \code{paste\_watermark\_at} are called identically from
+both paths, so opacity and placement really are WYSIWYG. Placement in particular is
+safe by construction, because the offsets are percentages of the base image, and the
+preview's base is a proportional thumbnail of the real one.
+
+\begin{jargon}{WYSIWYG}
+``What You See Is What You Get''. A promise that the on-screen representation matches
+the final output exactly, rather than approximating it.
+\end{jargon}
+
+\subsection{Where the promise breaks}
+
+The preview asks for a watermark box of \code{slider * scale}; the save asks for
+\code{slider}. That scaling is correct in intent. But it collides with the fact
+established earlier that \code{thumbnail} refuses to enlarge, and the collision
+produces a real bug.
+
+Consider a 3000x2000 photo, a 200x100 logo, and the width slider at 600. The preview
+thumbnails the photo to 300x200, so \code{scale} is 0.1 and it asks for a 60x60 box:
+60 is smaller than the logo's 200, so the logo \emph{does} shrink, to 60x30, which is
+20\% of the preview's width. The save asks for a 600x600 box: 600 is larger than 200,
+so \code{thumbnail} does nothing at all and the logo stays 200x100, which is 6.7\% of
+the photo's width.
+
+\begin{center}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Scenario (photo, logo, slider)} & \textbf{Preview} & \textbf{Saved} & \\
+\midrule
+3000x2000, 800x400 logo, slider 600 & 20.0\% & 20.0\% & agree \\
+3000x2000, 200x100 logo, slider 600 & 20.0\% & 6.7\% & \textbf{diverge} \\
+3000x2000, 200x100 logo, slider 150 & 5.0\% & 5.0\% & agree \\
+600x400, 200x100 logo, slider 150 & 25.0\% & 25.0\% & agree \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{honest}{The WYSIWYG guarantee fails when the slider exceeds the watermark's native size}
+Measured, not reasoned: the figures above come from running both paths and comparing
+the watermark's width as a fraction of its canvas. The preview shows a logo three
+times larger than the one that gets saved.
+
+The condition is precise. Divergence occurs when \code{slider * scale} is below the
+watermark's native width but \code{slider} is above it, because then the preview's
+request shrinks the logo and the save's request does not. When the watermark is
+natively larger than the slider value, both paths clamp proportionally and the
+preview is honest. Since the sliders reach 600 and many logos are smaller than that,
+the broken region is reachable in ordinary use, and it gets \emph{easier} to hit the
+larger the source photo is (a bigger photo means a smaller \code{scale}, which pushes
+the preview's request further down).
+
+The root cause is not the scaling; it is that \code{thumbnail} is an asymmetric
+operation being used as if it were symmetric. A fix would either clamp both paths to
+\code{min(slider, native\_size)} before scaling, or replace \code{thumbnail} with an
+explicit aspect-preserving \code{resize} that is willing to enlarge (which would also
+make the sliders do what their labels promise). This is the most defensible bug in
+the project to talk about: the design instinct (share the compositing function) was
+right, and the leak came in through a Pillow API asymmetry one layer above it.
+\end{honest}
+
+\section{Output: \code{save\_watermarked\_file}}
+\label{sec:deadjpeg}
+
+\begin{lstlisting}[language=Python]
+def save_watermarked_file(image, source_path, location, file_format):
+    source = Path(source_path)
+    out_dir = Path(location) if location else source.parent / 'watermarked'
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = 'png' if image.mode == 'RGBA' else file_format.lower()
+    out_path = out_dir / f'{source.stem}_watermarked.{suffix}'
+
+    if image.mode == 'RGBA':
+        image.save(out_path, 'PNG')
+    else:
+        image.save(out_path, file_format)
+\end{lstlisting}
+
+\begin{jargon}{\code{pathlib.Path}}
+The modern way to handle file paths in Python. \code{source.parent} gives the
+containing folder, \code{source.stem} gives the filename without its extension, and
+the \code{/} operator joins path pieces. It matters because it uses the right
+separator per operating system automatically. The README notes the original code
+split paths on \code{'/'} by hand, which breaks on Windows.
+\end{jargon}
+
+\code{mkdir(parents=True, exist\_ok=True)} creates the destination folder including
+any missing intermediate folders, and does not complain if it already exists. Writing
+to a \code{watermarked/} subfolder rather than beside the source is a good default:
+the originals are never touched, and a second run does not have to hunt for its own
+previous output.
+
+\begin{honest}{The JPEG option in the format dropdown can never be selected, ever}
+Follow the modes. \code{apply\_opacity} always returns RGBA. \code{paste\_watermark\_at}
+sees an RGBA watermark and therefore always returns an RGBA result. So the
+\code{image.mode == 'RGBA'} test here is always true, \code{suffix} is always
+\code{'png'}, and the file is always saved as PNG. The \code{file\_format} parameter
+is read on two lines that never execute.
+
+Verified end to end: a save with the format explicitly set to \code{'JPEG'} produced
+\file{photo\_watermarked.png}. The dropdown at the bottom of the window offers a
+choice between JPEG and PNG, defaults to JPEG, and has no effect whatsoever on any
+possible run of the program.
+
+The README does flag related behaviour, saying ``RGBA output still forces PNG
+regardless of the user's format choice'', which is honest as far as it goes. But it
+frames this as a conditional edge case, when tracing the callers shows it is
+unconditional. The dropdown is not occasionally overridden; it is inert. That is the
+sharper and more defensible way to state it, and it changes the remedy: the honest
+options are to delete the control, or to flatten the RGBA result onto a white
+background when the user asks for JPEG (\code{Image.alpha\_composite} onto an opaque
+canvas, then \code{convert('RGB')}), which is what the control implicitly promises.
+\end{honest}
+
+\subsection{\code{apply\_and\_save}: the batch loop}
+
+The loop opens each photo, rebuilds the watermark \emph{for that photo's actual
+dimensions}, composites, saves, and counts. Rebuilding per photo is correct: it is
+what allows a mixed batch of portrait and landscape photos at different resolutions
+to receive visually consistent placement, because the percentage offsets resolve
+against each photo's own size.
+
+\begin{honest}{Failures are counted as if they never happened}
+\begin{lstlisting}[language=Python]
+try:
+    base = Image.open(path); base.load()
+except Exception:
+    continue
+\end{lstlisting}
+A photo that cannot be opened (corrupt, deleted between selection and save, wrong
+permissions) is skipped silently. It is not counted in \code{saved}, so the total is
+accurate, but the user is told ``Saved 9 watermarked photo(s).'' after selecting ten
+and is never told which one failed or that anything failed at all. A bare
+\code{except Exception} around both the open and the load also swallows genuinely
+unexpected errors. Collecting the failures and reporting ``Saved 9, skipped 1
+(bad.jpg)'' would be a handful of lines.
+
+The same pattern appears in \code{upload\_watermark} and \code{\_render\_preview},
+though there it is better behaved: both set a specific message into
+\code{status\_var} or draw one onto the canvas, so the user does learn something went
+wrong.
+\end{honest}
+
+\section{Smaller findings}
+
+\begin{honest}{Dead import}
+Line 8 is \code{import os}. Verified by grep: the string \code{os.} appears nowhere
+in the file. The module is imported and never used, a leftover from the pre-\code{pathlib}
+version the README describes. One line to delete.
+\end{honest}
+
+\begin{honest}{No tests at all}
+There is no test file and no test framework in \file{requirements.txt}. Every claim
+in the README rests on ad hoc verification scripts pasted into the README itself
+rather than anything that can be re-run by \code{pytest} on a change. The README
+names this as the first thing it would do differently, which is the right call: the
+four pure functions are perfectly testable (they take images and numbers and return
+images and numbers, with no window in sight), and the two bugs documented in this
+section~\ref{sec:wysiwyg} and section~\ref{sec:deadjpeg} would each have been caught
+by a three-line assertion. This is the clearest gap in the project.
+\end{honest}
+
+\begin{honest}{The README's ``Challenges'' section documents a LaTeX problem}
+One of the five bullets under ``Challenges'' is about a TikZ style name colliding
+with a \code{pgfplots} key while building these explainer PDFs. That is a real
+problem that really happened, but it is a problem with the documentation toolchain,
+not with the image watermarking tool, and it sits oddly in a list otherwise about
+alpha compositing and preview performance. A reader skimming for engineering
+substance may read it as padding. It would sit better in the portfolio's own notes.
+\end{honest}
+
+\subsection{Things done right, stated plainly}
+
+Honesty runs both ways, and the following are genuine strengths worth defending:
+
+\begin{itemize}
+\item The pure-function split is real and it is the reason the compositing is
+      trustworthy across two call sites. Most small GUI tools of this kind smear the
+      pixel logic through the button handlers.
+\item The \code{watermark\_original} read-only discipline makes every control
+      non-destructive without any undo machinery.
+\item The alpha-compositing bug was found, fixed, and then \emph{proved} with a
+      synthetic-pixel experiment rather than by eyeballing the output. Given that the
+      broken version looks correct in most viewers, eyeballing would have missed it.
+      That is the single best thing in this project.
+\item Percentage-based offsets are the right abstraction for a batch tool.
+\item The debounce, the thumbnailed preview and the reuse of the compositing function
+      show the author thinking about the interaction between correctness and
+      responsiveness rather than only one of them.
+\end{itemize}
+
+\section{Running it}
+
+\begin{lstlisting}[language=bash]
+python3 -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python3 main.py
+\end{lstlisting}
+
+The window opens immediately with both preview panes showing ``Upload a photo to
+preview'', because \code{\_\_init\_\_} schedules a render before anything is loaded
+and \code{\_render\_preview} handles the empty case first.
+
+\begin{honest}{What is and is not verified}
+The pixel-level claims in this document were re-derived by executing the project's
+own functions under Python 3.12.3 and Pillow 10.1.0. The alpha table, the mode
+tracing, the \code{thumbnail} non-enlargement, the WYSIWYG divergence table, the
+off-canvas coordinates and the JPEG-to-PNG result are all measured.
+
+Not verified here: the interactive flow through the native file dialogs (they block
+on user input and cannot be driven headlessly, as the README states), and any
+behaviour on Windows or macOS. Everything said about the file dialogs and about
+cross-platform path handling is reasoned from the source, and is \textbf{inferred}
+rather than observed.
+\end{honest}
+
+\end{document}
